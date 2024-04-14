@@ -1,0 +1,6 @@
+(library
+ (inline_tests)
+ (name dynamo)
+ (libraries sedlex eio eio_linux eio_main containers cmdliner)
+ (preprocess
+  (pps ppx_expect ppx_inline_test)))

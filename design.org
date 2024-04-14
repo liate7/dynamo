@@ -1,0 +1,28 @@
+* Goal
+Follow-up project to [[file:~/projects/ocamlox/][ocamlox]]
+- A dynamically-typed language
+  (so don't have to write a type system yet)
+- Actual language design, instead of just copying lox
+  - mostly expression-based
+    probably ocaml-like grammar, grammar is list of declarations that mostly doesn't need delimiters
+  - impure functional
+  - pattern matching
+  - symbols
+  - pipe operator
+  - explicit refs?
+  - maybe actors?
+- Better QoI, error messages, etc
+- Design inspirations
+  - Lox, kind of
+  - ocaml
+  - given goals, probably look more at elixir and erlang
+  - existing thoughts from [[file:~/docs/org/structural-module-lang-idea.org::*Draft 1][structural module lang]], at least some?
+- initial goal: design, tree-walk interpreter
+  - stretch: compile to wasm
+    - maybe write bytecode interpreter?
+      (probably not, leave that level of effort for other project
+  - tooling?
+* Semantics
+- …I don't think ml-style adjacency + currying makes sense w/out static types, so normal application
+- scoped let, a la lisps and ocaml
+- idk, normal impure eager-evaluation functional lang?
