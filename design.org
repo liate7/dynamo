@@ -10,6 +10,7 @@ Follow-up project to [[file:~/projects/ocamlox/][ocamlox]]
   - symbols
   - pipe operator
   - explicit refs?
+    - or MVS!
   - maybe actors?
 - Better QoI, error messages, etc
 - Design inspirations
@@ -20,7 +21,7 @@ Follow-up project to [[file:~/projects/ocamlox/][ocamlox]]
 - initial goal: design, tree-walk interpreter
   - stretch: compile to wasm
     - maybe write bytecode interpreter?
-      (probably not, leave that level of effort for other project
+      (probably not, leave that level of effort for other project)
   - tooling?
 * Semantics
 - …I don't think ml-style adjacency + currying makes sense w/out static types, so normal application

@@ -1,0 +1,10 @@
+(menhir
+  (flags --table)
+ (modules parser))
+
+(library
+ (name reader)
+ (libraries containers sedlex menhirLib zarith)
+ (inline_tests)
+ (preprocess
+  (pps sedlex.ppx ppx_string ppx_inline_test ppx_compare)))
