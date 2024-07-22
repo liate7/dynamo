@@ -48,12 +48,21 @@ sequence:
     { let _, s = s in ($startpos, $endpos), e :: s }
 
 single:
-  | LET; "{"; b = separated_list(",", binding); "}"; IN; e = expression
+  | LET; ","?; b = separated_nonempty_list(",", binding); IN; e = expression
     { ($startpos, $endpos), Let { bindings = b; body = e } }
   | "λ"; p = pattern+; "->"; e = expression
     { ($startpos, $endpos), Lambda { name = None; params = p; body = e } }
   | MATCH; e = expression; IN; "{"; "|"?; c = separated_nonempty_list("|", match_clause); "}"
     { ($startpos, $endpos), Match (e, c) }
+  | "λ"; MATCH; "{"; "|"?; c = separated_nonempty_list("|", match_clause); "}"
+    { let id = Id.of_string "_" in
+      ($startpos, $endpos),
+      Lambda {
+          name = None;
+          params = [Bind id]; 
+          body = ($startpos, $endpos), Match ((($startpos, $endpos), Var id), c)
+        }
+    }
   | l = single; o = operator; r = single
     { ($startpos, $endpos), Appl (o, [l; r]) }
   | b = base; rest = base+
@@ -96,9 +105,11 @@ identifier:
 
 dict_element(elem):
   | i = identifier; "="; e = elem
-    { `Bare i, e }
+    { `Bare (i, e) }
   | "."; "["; k = elem; "]"; "="; v = elem
-    { `Computed k, v }
+    { `Computed (k, v) }
+  | i = identifier;
+    { `Single i }
 
 %inline operator:
   | "+" { ($startpos, $endpos), Var (Id.of_string "+") }

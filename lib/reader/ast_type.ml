@@ -13,7 +13,9 @@ end
 module Literal = struct
   type 'elem t =
     | List of 'elem List.t
-    | Dict of ([ `Bare of Id.t | `Computed of 'elem ] * 'elem) List.t
+    | Dict of
+        [ `Bare of Id.t * 'elem | `Computed of 'elem * 'elem | `Single of Id.t ]
+        List.t
     | Number of Q.t
     | Symbol of Id.t
     | Unit

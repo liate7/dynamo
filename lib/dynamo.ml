@@ -5,4 +5,6 @@ module Eval = Eval
 module Reader = Reader
 
 let eval_string =
-  Sedlexing.Utf8.from_string %> Reader.parse %> Eval.eval Eval.std_prelude
+  Sedlexing.Utf8.from_string %> Reader.parse
+  %> Resolver.pass Eval.std_prelude
+  %> Eval.eval Eval.(Env.create std_prelude)

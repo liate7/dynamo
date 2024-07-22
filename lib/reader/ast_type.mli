@@ -12,7 +12,9 @@ end
 module Literal : sig
   type 'elem t =
     | List of 'elem list
-    | Dict of ([ `Bare of Id.t | `Computed of 'elem ] * 'elem) List.t
+    | Dict of
+        [ `Bare of Id.t * 'elem | `Computed of 'elem * 'elem | `Single of Id.t ]
+        List.t
     | Number of Q.t
     | Symbol of Id.t
     | Unit

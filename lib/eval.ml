@@ -5,10 +5,7 @@ module Id = Ast.Id
 module Pattern = Ast.Pattern
 module Literal = Ast.Literal
 
-exception Runtime_fatal of Span.t * String.t
 exception Runtime_nonfatal of Span.t * String.t
-
-module Bindings = Map.Make (Ast.Id)
 
 module rec Value : sig
   type t =
@@ -20,9 +17,11 @@ module rec Value : sig
     | Builtin of { arity : int; name : string; actual : Span.t -> t list -> t }
     | Lambda of {
         name : string;
-        closure : t Bindings.t;
-        parameters : Reader.Ast.Pattern.t list;
-        body : Reader.Ast.expr;
+        closure :
+          (Id.t * [ `Recurse of Value.t Option.t Ref.t | `Value of Value.t ])
+          List.t;
+        parameters : Pattern.t list;
+        body : Resolver.expr;
       }
 
   val compare : t -> t -> int
@@ -57,9 +56,11 @@ end = struct
     | Lambda of {
         (* identity_tag : Obj.raw_data *)
         name : String.t;
-        closure : t Bindings.t;
+        closure :
+          (Id.t * [ `Recurse of Value.t Option.t Ref.t | `Value of Value.t ])
+          List.t;
         parameters : Pattern.t List.t;
-        body : Ast.expr; [@compare.ignore]
+        body : Resolver.expr; [@compare.ignore]
       }
   [@@deriving compare]
 
@@ -76,7 +77,9 @@ end = struct
     | Lambda l, Lambda r ->
         String.equal l.name r.name
         && List.equal Ast.Pattern.equal l.parameters r.parameters
-        && Bindings.equal equal l.closure r.closure
+        && [%equal:
+             (Id.t * [ `Recurse of Value.t Option.t Ref.t | `Value of Value.t ])
+             List.t] l.closure r.closure
         && Equal.physical l.body r.body
     | ( (Unit | Number _ | Symbol _ | List _ | Dict _ | Builtin _ | Lambda _),
         (Unit | Number _ | Symbol _ | List _ | Dict _ | Builtin _ | Lambda _) )
@@ -153,94 +156,153 @@ end
 and Dict : (Map.S with type key = Value.t) = Map.Make (Value)
 
 module Env = struct
-  type bindings = Value.t Bindings.t
-  type t = { bindings : Value.t Bindings.t }
+  type bindings =
+    (Id.t * [ `Recurse of Value.t Option.t Ref.t | `Value of Value.t ]) List.t
 
-  let empty = { bindings = Bindings.empty }
+  type t = { bindings : bindings }
+
+  let empty = { bindings = [] }
+
+  exception Match_failure of Pattern.t * Value.t
 
   let rec add_binding pat value ({ bindings } as t) =
-    let bind_literal lit value =
-      let failure =
-        Result.fail [%string "%{Value.to_string value} can't be bound here."]
+    let handle_dict_row (t, dict) row =
+      let do_symbol_binding i pat =
+        match Dict.get (Value.Symbol i) dict with
+        | Some value ->
+            let t = add_binding pat value t in
+            (t, Dict.remove (Value.Symbol i) dict)
+        | None -> raise (Match_failure (pat, value))
       in
+      match row with
+      | `Single i -> do_symbol_binding i (Bind i)
+      | `Bare (i, pat) -> do_symbol_binding i pat
+      | `Computed _ -> assert false
+    in
+    let bind_literal lit value =
       match (lit, value) with
-      | Literal.Unit, Value.Unit -> Ok t
-      | Literal.Number l, Value.Number r when Q.(l = r) -> Ok t
-      | Literal.Symbol l, Value.Symbol r when Id.(l = r) -> Ok t
+      | Literal.Unit, Value.Unit -> t
+      | Literal.Number l, Value.Number r when Q.(l = r) -> t
+      | Literal.Symbol l, Value.Symbol r when Id.(l = r) -> t
       | Literal.List l, Value.List r when List.compare_lengths l r = 0 ->
           List.combine l r
-          |> Result.fold_l (fun t (pat, value) -> add_binding pat value t) t
+          |> List.fold_left
+               ~f:(fun t (pat, value) -> add_binding pat value t)
+               ~init:t
       | Literal.Dict lit, Value.Dict d ->
-          lit
-          |> Result.fold_l
-               (fun t (key, pat) ->
-                 match key with
-                 | `Bare i -> (
-                     match Dict.get (Value.Symbol i) d with
-                     | Some value -> add_binding pat value t
-                     | None -> failure)
-                 | `Computed _p -> Result.fail "not implemented yet")
-               t
+          let t, _ = List.fold_left ~f:handle_dict_row ~init:(t, d) lit in
+          t
       | ( ( Literal.Number _ | Literal.Symbol _ | Literal.List _
           | Literal.Dict _ | Literal.Unit ),
           ( Value.Unit | Value.Number _ | Value.Symbol _ | Value.List _
           | Value.Dict _ | Value.Builtin _ | Value.Lambda _ ) ) ->
-          failure
+          raise (Match_failure (pat, value))
     in
     match pat with
-    | Pattern.Bind id -> Ok { bindings = Bindings.add id value bindings }
-    | Pattern.Hole _ -> Ok t
+    | Pattern.Bind id -> { bindings = (id, `Value value) :: bindings }
+    | Pattern.Hole _ -> t
     | Pattern.Literal l -> bind_literal l value
 
   let add_bindings_list kvs t =
-    Result.fold_l (fun t (pat, value) -> add_binding pat value t) t kvs
+    List.fold_left
+      ~f:(fun t (pat, value) -> add_binding pat value t)
+      ~init:t kvs
+
+  let create kvs =
+    List.fold_left
+      ~f:(fun t (id, value) -> add_binding (Pattern.Bind id) value t)
+      ~init:empty kvs
+
+  let raise_binding_failure ~span pat value =
+    raise
+      (Errors.Runtime_fatal
+         ( span,
+           [%string
+             "Can't match %{Value.to_string value} with %{Pattern.to_string \
+              pat}"] ))
+
+  let get ~span ({ bindings } : t) (idx, intended_id) =
+    match List.nth_opt bindings idx with
+    | None -> None
+    | Some (found_id, value) -> (
+        assert (Id.(intended_id = found_id));
+        match value with
+        | `Recurse { contents = None } ->
+            raise
+              (Errors.Runtime_fatal
+                 ( span,
+                   [%string
+                     "Tried to access unresolved variable %{Id.to_string \
+                      found_id}"] ))
+        | `Recurse { contents = Some value } -> Some value
+        | `Value value -> Some value)
+
+  let declare ~span:_ t id =
+    { bindings = (id, `Recurse (Ref.create None)) :: t.bindings }
+
+  let resolve ~span t (idx, intended_id) value =
+    let found_id, to_resolve = List.nth t.bindings idx in
+    assert (Id.(intended_id = found_id));
+    match to_resolve with
+    | `Value _ ->
+        raise
+          (Errors.Miscompilation
+             (span, "Tried to resolve something other than a recursion cell."))
+    | `Recurse { contents = Some _ } ->
+        raise
+          (Errors.Miscompilation
+             (span, "Tried to resolve an already-resolved recursion cell."))
+    | `Recurse ({ contents = None } as cell) ->
+        cell := get ~span t (value, intended_id)
 end
 
 let raise_arity_mismatch ~span _name arity args =
   raise
-    (Runtime_fatal
+    (Errors.Runtime_fatal
        ( span,
          [%string
            "Arity mismatch: %{List.length args |> Int.to_string} ≠ %{arity |> \
             Int.to_string}."] ))
 
-let rec eval ({ Env.bindings } as env) ast : Value.t =
+let rec eval env (ast : Resolver.output) : Value.t =
   match ast with
-  | _, Ast.Literal Literal.Unit -> Unit
-  | _, Ast.Literal (Literal.Number q) -> Number q
-  | _, Ast.Literal (Literal.Symbol s) -> Symbol s
-  | _, Ast.Literal (Literal.List l) -> List (List.map ~f:(eval env) l)
-  | _, Ast.Literal (Literal.Dict d) ->
+  | _, Resolver.Literal Literal.Unit -> Unit
+  | _, Resolver.Literal (Literal.Number q) -> Number q
+  | _, Resolver.Literal (Literal.Symbol s) -> Symbol s
+  | _, Resolver.Literal (Literal.List l) -> List (List.map ~f:(eval env) l)
+  | _, Resolver.Literal (Literal.Dict d) ->
       Dict
-        (List.fold_left ~init:Dict.empty d ~f:(fun d (k, v) ->
-             let k =
-               match k with
-               | `Bare s -> Value.Symbol s
-               | `Computed ast -> eval env ast
+        (List.fold_left ~init:Dict.empty d ~f:(fun d row ->
+             let k, v =
+               match row with
+               | `Bare (s, v) -> (Value.Symbol s, v)
+               | `Single _ -> assert false
+               | `Computed (ast, v) -> (eval env ast, v)
              in
              Dict.add k (eval env v) d))
-  | _, Ast.Seq asts ->
+  | _, Resolver.Seq asts ->
       List.map ~f:(eval env) asts |> List.last_opt |> Option.get_exn_or ""
-  | span, Ast.Let { bindings = kvs; body } ->
-      let env = env_with_bindings ~span env kvs in
+  | span, Resolver.Let { bindings = kvs; body } ->
+      let env = letrec_binds ~span env kvs in
       eval env body
-  | span, Ast.Var v -> (
-      match Bindings.get v bindings with
+  | span, Resolver.Var (idx, var_name) -> (
+      match Env.get ~span env (idx, var_name) with
       | Some v -> v
       | None ->
           raise
-            (Runtime_fatal
-               (span, [%string "Variable %{Id.to_string v} is unbound."])))
-  | span, Ast.Appl (f, args) ->
+            (Errors.Runtime_fatal
+               (span, [%string "Variable %{Id.to_string var_name} is unbound."]))
+      )
+  | span, Resolver.Appl (f, args) ->
       let rec loop f args =
         let ret, rest = apply env f args ~span in
         match rest with [] -> ret | args -> loop ret args
       in
       List.map ~f:(eval env) args |> loop (eval env f)
-  | span, Ast.Get (from, idx) ->
+  | span, Resolver.Get (from, idx) ->
       let from = eval env from and idx = eval env idx in
       Value.get ~span from idx
-  | span, Ast.Lambda { name; params; body } ->
+  | span, Resolver.Lambda { name; params; body } ->
       let name = name |> Option.map_or ~default:"%anon%" Id.to_string in
       Lambda
         {
@@ -249,27 +311,32 @@ let rec eval ({ Env.bindings } as env) ast : Value.t =
           parameters = params;
           body;
         }
-  | span, Ast.Match (value, clauses) ->
+  | span, Resolver.Match (value, clauses) ->
       let value = eval env value in
       let rec loop = function
         | [] ->
             raise
-              (Runtime_fatal
+              (Errors.Runtime_fatal
                  ( span,
                    [%string "Value %{Value.to_string value} matched no clauses"]
                  ))
         | (pat, expr) :: clauses -> (
             match Env.add_binding pat value env with
-            | Ok env -> eval env expr
-            | Error _ -> loop clauses)
+            | env -> eval env expr
+            | exception Env.Match_failure _ -> loop clauses)
       in
       loop clauses
 
-and env_with_bindings ~span env kvs =
-  let f env (pat, expr) =
-    env
-    |> Env.add_binding pat (eval env expr)
-    |> Result.get_lazy (fun str -> raise (Runtime_fatal (span, str)))
+and letrec_binds ~span env kvs =
+  let f env = function
+    | Resolver.Bind (pat, expr) -> (
+        try env |> Env.add_binding pat (eval env expr)
+        with Env.Match_failure (pat, value) ->
+          Env.raise_binding_failure ~span pat value)
+    | Decl id -> Env.declare ~span env id
+    | Resolve { cell_idx; name; value_idx } ->
+        Env.resolve ~span env (cell_idx, name) value_idx;
+        env
   in
   List.fold_left ~f ~init:env kvs
 
@@ -285,14 +352,15 @@ and apply ~span _env t args =
   | Builtin { arity; actual; _ } ->
       let args, cont = List.take_drop arity args in
       (actual span args, cont)
-  | Lambda { closure; parameters; body; _ } ->
+  | Lambda { closure; parameters; body; _ } -> (
       let args, cont = List.take_drop (List.length parameters) args in
-      let env =
+      match
         { (* env with *) bindings = closure }
         |> Env.add_bindings_list (List.combine parameters args)
-        |> Result.get_lazy (fun str -> raise (Runtime_fatal (span, str)))
-      in
-      (eval env body, cont)
+      with
+      | env -> (eval env body, cont)
+      | exception Env.Match_failure (pat, value) ->
+          Env.raise_binding_failure ~span pat value)
 
 let std_prelude =
   let binding name arity f =
@@ -311,14 +379,10 @@ let std_prelude =
         else Value.Symbol (Id.of_string "false")
     | args -> raise_arity_mismatch ~span "=" 2 args
   in
-  {
-    Env.bindings =
-      Bindings.of_list
-        [
-          make_arith_binop "+" Q.( + );
-          make_arith_binop "-" Q.( - );
-          make_arith_binop "*" Q.( * );
-          make_arith_binop "/" Q.( / );
-          binding "=" 2 equals_wrapper;
-        ];
-  }
+  [
+    make_arith_binop "+" Q.( + );
+    make_arith_binop "-" Q.( - );
+    make_arith_binop "*" Q.( * );
+    make_arith_binop "/" Q.( / );
+    binding "=" 2 equals_wrapper;
+  ]
