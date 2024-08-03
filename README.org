@@ -1,0 +1,5 @@
+A simple dynamically-typed functional language,
+inspired by OCaml and BEAM-languages (ie, Erlang and Elixir).
+
+A followup language project to following through (the first half of) Crafting Interpreters,
+as a simple language that nonetheless involves some design work.
