@@ -24,6 +24,27 @@ Follow-up project to [[file:~/projects/ocamlox/][ocamlox]]
       (probably not, leave that level of effort for other project)
   - tooling?
 * Semantics
-- …I don't think ml-style adjacency + currying makes sense w/out static types, so normal application
 - scoped let, a la lisps and ocaml
 - idk, normal impure eager-evaluation functional lang?
+
+
+
+
+* Exceptions
+Need:
+- value
+  probably ~Exception of { tag : t; value : t; stack : stack Option.t }~?
+- constructor and matcher
+  I'm thinking probably ~tag !! value~ or ~tag ! value~, with the stack added by ~raise~
+  The most likely primitive for getting the ~stack~ is probably
+  just making a new exception with the same (or related?) stack
+- primitives:
+  - ~raise~
+  - something for chaining exceptions (or making new ones with the old stack-trace?)
+    (Either like ~chain old new~ or ~raise (with-stack old new)~)
+  - (maybe also a “clear stack-trace” function?)
+    can replicate with ~\( tag ! value ) -> tag ! value~, though
+- Catching matcher
+  Probably ~raise pat~, where pat can only helpfully be from ~id~ or ~tag !! value~
+- Matching combinators:
+  definitely ~and~ (or ~as~), probably also add ~or~ for completeness
