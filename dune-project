@@ -7,7 +7,7 @@
 (generate_opam_files true)
 
 (source
- (github username/reponame))
+ (github liate7/dynamo))
 
 (authors "Andrew Patterson")
 
