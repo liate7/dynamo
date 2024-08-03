@@ -1,7 +1,5 @@
 open ContainersLabels
 open Reader
-
-(* open Ast *)
 module Literal = Ast.Literal
 module Pattern = Ast.Pattern
 module Id = Ast.Id
@@ -46,8 +44,10 @@ module Env = struct
   let of_alist alist =
     alist |> List.to_seq |> Seq.map (fun (name, _) -> name) |> bind_all empty
 
-  let get id { bindings; _ } = Map.get id bindings
-  let depth { depth; _ } = depth
+  let get exn id t =
+    match Map.get id t.bindings with
+    | Some idx -> t.depth - idx - 1
+    | None -> raise exn
 end
 
 module Id_set = Set.Make (Id)
@@ -68,42 +68,12 @@ and literal_binds : Pattern.t Literal.t -> Id.t Seq.t = function
                Seq.of_list [ k; v ] |> Seq.flat_map pattern_binds)
   | Literal.Unit | Literal.Number _ | Literal.Symbol _ -> Seq.empty
 
-let rec remove_from_pattern : Id_set.t -> Pattern.t -> Pattern.t =
- fun to_remove pat ->
-  match pat with
-  | Pattern.Bind id when Id_set.mem id to_remove ->
-      Pattern.Hole (Id.to_string id)
-  | Pattern.Bind _ | Pattern.Hole _ -> pat
-  | Pattern.Literal lit -> Pattern.Literal (remove_from_literal to_remove lit)
-
-and remove_from_literal : Id_set.t -> Pattern.t Literal.t -> Pattern.t Literal.t
-    =
- fun to_remove literal ->
-  match literal with
-  | Literal.Number _ | Literal.Symbol _ | Literal.Unit -> literal
-  | Literal.List l ->
-      Literal.List (List.map l ~f:(remove_from_pattern to_remove))
-  | Literal.Dict dict_rows ->
-      Literal.Dict
-        (List.map dict_rows ~f:(function
-          | `Bare (id, pat) -> `Bare (id, remove_from_pattern to_remove pat)
-          | `Single id when Id_set.mem id to_remove ->
-              `Bare (id, Pattern.Hole (Id.to_string id))
-          | `Single id -> `Single id
-          | `Computed (k, v) ->
-              `Computed
-                ( remove_from_pattern to_remove k,
-                  remove_from_pattern to_remove v )))
-
 let rec map_expression : Env.t -> input -> output =
  fun env ast ->
   let span, ast = ast in
   ( span,
     match ast with
-    | Var i -> (
-        match Env.get i env with
-        | None -> raise (Binding_unbound (span, i))
-        | Some idx -> Var (Env.depth env - idx - 1, i))
+    | Var i -> Var (Env.get (Binding_unbound (span, i)) i env, i)
     | Lambda { name; params; body } ->
         let env =
           List.to_seq params |> Seq.flat_map pattern_binds |> Env.bind_all env
@@ -150,58 +120,46 @@ and sequence_letrec ~span env bindings =
          ( span,
            [%string
              {|Duplicate bindings for the following names: %{duplicates}|}] ))
-  else
-    (* Both transform the binding values and remove all the recursive bindings *)
-    let rec loop (env, declared, bindings) (pat, expr) bound_here =
-      match map_expression env expr with
-      | exception Binding_unbound (_, id) when Id_set.mem id bound_in_let ->
-          let ret =
-            ( Env.bind_all env (Seq.singleton id),
-              Id_set.add id declared,
-              Decl id :: bindings )
-          in
-          loop ret (pat, expr) bound_here
-      | expr ->
-          let to_resolve = Id_set.inter declared (Id_set.of_list bound_here) in
-          let new_env = Env.bind_all env (Seq.of_list bound_here) in
-          let unshadowed = { env with depth = new_env.depth } in
-          (* let unshadowed = Env.t *)
-          ( new_env,
-            declared,
-            Id_set.fold
-              (fun id bindings ->
-                Resolve
-                  {
-                    cell_idx =
-                      (match Env.get id unshadowed with
-                      | Some idx -> unshadowed.depth - idx - 1
-                      | None ->
-                          raise
-                            (Errors.Miscompilation
-                               ( span,
-                                 [%string
-                                   "Can't find %{Id.to_string id} to compile \
-                                    resolving it."] )));
-                    name = id;
-                    value_idx =
-                      (match Env.get id new_env with
-                      | Some idx -> new_env.depth - idx - 1
-                      | None ->
-                          raise
-                            (Errors.Miscompilation
-                               ( span,
-                                 [%string
-                                   "Can't find %{Id.to_string id} to compile \
-                                    resolving it."] )));
-                  }
-                :: bindings)
-              to_resolve
-              (Bind (pat, expr) :: bindings) )
+  else map_bindings ~span env bindings bound_ids bound_in_let
+
+and map_bindings ~span env bindings bound_ids bound_in_let =
+  (* Both transform the binding values and remove all the recursive bindings *)
+  let get_or_throw id env =
+    let exn =
+      Errors.Miscompilation
+        ( span,
+          [%string "Can't find %{Id.to_string id} to compile resolving it."] )
     in
-    let env, _, bindings =
-      List.fold_left2 ~init:(env, Id_set.empty, []) bindings bound_ids ~f:loop
-    in
-    (env, List.rev bindings)
+    Env.get exn id env
+  in
+  let rec loop (env, declared, bindings) (pat, expr) bound_here =
+    match map_expression env expr with
+    | exception Binding_unbound (_, id) when Id_set.mem id bound_in_let ->
+        let ret =
+          ( Env.bind_all env (Seq.singleton id),
+            Id_set.add id declared,
+            Decl id :: bindings )
+        in
+        loop ret (pat, expr) bound_here
+    | expr ->
+        let to_resolve = Id_set.inter declared (Id_set.of_list bound_here) in
+        let new_env = Env.bind_all env (Seq.of_list bound_here) in
+        let unshadowed = { env with depth = new_env.depth } in
+        let bindings =
+          Id_set.fold
+            (fun id bindings ->
+              let cell_idx = get_or_throw id unshadowed
+              and value_idx = get_or_throw id new_env in
+              Resolve { cell_idx; name = id; value_idx } :: bindings)
+            to_resolve
+            (Bind (pat, expr) :: bindings)
+        in
+        (new_env, declared, bindings)
+  in
+  let env, _, bindings =
+    List.fold_left2 ~init:(env, Id_set.empty, []) bindings bound_ids ~f:loop
+  in
+  (env, List.rev bindings)
 
 and map_literal : span:Span.t -> Env.t -> input Literal.t -> output Literal.t =
  fun ~span env -> function
