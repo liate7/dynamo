@@ -116,8 +116,18 @@ module Value = struct
     | Unit -> "()"
     | Number n -> Q.to_string n
     | Symbol s -> ":" ^ Id.to_string s
-    | Exception { tag; value; stack = (* TODO: stringify this *) _ } ->
-        [%string "#<exception (%{to_string tag} ! %{to_string value}) >"]
+    | Exception { tag; value; stack } ->
+        let inner =
+          stack
+          |> Option.map (fun list ->
+                 List.map ~f:Span.to_string list |> String.concat ~sep:", ")
+        in
+        let stack =
+          inner
+          |> Option.map_or ~default:"none" (fun inner -> "[" ^ inner ^ "]")
+        in
+        [%string
+          "#<exception (%{to_string tag} ! %{to_string value}) %{stack}>"]
     | List l -> "[" ^ (List.map ~f:to_string l |> String.concat ~sep:", ") ^ "]"
     | Dict d ->
         "{"
@@ -155,6 +165,12 @@ module Value = struct
     | Number n -> n
     | Unit | Symbol _ | Exception _ | List _ | Dict _ | Builtin _ | Lambda _ ->
         raise_type_error ~stack t "number"
+
+  let as_exception ~stack t =
+    match t with
+    | Exception exn -> exn
+    | Unit | Number _ | Symbol _ | List _ | Dict _ | Builtin _ | Lambda _ ->
+        raise_type_error ~stack t "exception"
 
   (* let as_bool ~span t = *)
   (*   let _ = span in *)
@@ -438,11 +454,18 @@ let std_prelude =
     | [ l; r ] -> Value.Exception { tag = l; value = r; stack = None }
     | args -> raise_arity_mismatch ~stack:env.stack "!" 2 args
   and raise_fn (env : Value.t Env.t) = function
-    | [ Value.Exception ({ stack; _ } as exn) ] ->
+    | [ obj ] ->
+        let exn = Value.as_exception ~stack:env.stack obj in
         raise
           (Runtime_nonfatal
-             { exn with stack = Option.or_ stack ~else_:(Some env.stack) })
+             { exn with stack = Option.or_ exn.stack ~else_:(Some env.stack) })
     | args -> raise_arity_mismatch ~stack:env.stack "raise" 1 args
+  and with_stack_fn env = function
+    | [ old; newer ] ->
+        let old = Value.as_exception ~stack:env.Env.stack old in
+        let newer = Value.as_exception ~stack:env.stack newer in
+        Value.Exception { newer with stack = old.stack }
+    | args -> raise_arity_mismatch ~stack:env.Env.stack "with_stack_fn" 2 args
   in
   [
     make_arith_binop "+" Q.( + );
@@ -452,4 +475,5 @@ let std_prelude =
     binding "=" 2 equals_wrapper;
     binding "!" 2 make_exn;
     binding "raise" 1 raise_fn;
+    binding "with-stack" 2 with_stack_fn;
   ]
