@@ -5,7 +5,20 @@ module Id = Ast.Id
 module Pattern = Ast.Pattern
 module Literal = Ast.Literal
 
-module rec Value_impl : sig
+module Env' = struct
+  type 'value bindings =
+    (Id.t * [ `Recurse of 'value Option.t Ref.t | `Value of 'value ]) List.t
+
+  type 'value t = { bindings : 'value bindings; stack : Span.t list }
+
+  let empty = { bindings = []; stack = [] }
+  let push_call span t = { t with stack = span :: t.stack }
+
+  let add_binding id value (t : 'value t) =
+    { t with bindings = (id, `Value value) :: t.bindings }
+end
+
+module rec Value' : sig
   type t =
     | Unit
     | Number of Q.t
@@ -13,21 +26,19 @@ module rec Value_impl : sig
     | Exception of except
     | List of t List.t
     | Dict of t Dict.t
-    | Builtin of { arity : int; name : string; actual : env -> t list -> t }
+    | Builtin of {
+        arity : int;
+        name : string;
+        actual : t Env'.t -> t list -> t;
+      }
     | Lambda of {
         name : string;
-        closure :
-          (Id.t * [ `Recurse of t Option.t Ref.t | `Value of t ]) List.t;
+        closure : t Env'.bindings;
         parameters : Pattern.t list;
         body : Resolver.expr;
       }
 
   and except = { tag : t; value : t; stack : Span.t list option }
-
-  and env = {
-    bindings : (Id.t * [ `Recurse of t Option.t Ref.t | `Value of t ]) List.t;
-    stack : Span.t list;
-  }
 
   val compare : t -> t -> int
   val equal : t -> t -> bool
@@ -44,7 +55,7 @@ end = struct
         (* (* Like: *) identity_tag : Obj.raw_data *)
         arity : Int.t;
         name : String.t;
-        actual : env -> t list -> t; [@compare.ignore]
+        actual : t Env'.t -> t list -> t; [@compare.ignore]
       }
     | Lambda of {
         (* identity_tag : Obj.raw_data *)
@@ -56,24 +67,17 @@ end = struct
       }
   [@@deriving compare]
 
-  and except = {
-    tag : t;
-    value : t;
-    stack : Span.t list option; [@compare.ignore]
-  }
+  and except = { tag : t; value : t; stack : Span.t List.t Option.t }
   [@@deriving compare]
-
-  and env = {
-    bindings : (Id.t * [ `Recurse of t Option.t Ref.t | `Value of t ]) List.t;
-    stack : Span.t list; [@compare.ignore]
-  }
 
   let rec equal l r =
     match (l, r) with
     | Unit, Unit -> true
     | Number l, Number r -> Q.equal l r
     | Symbol l, Symbol r -> Id.equal l r
-    | Exception l, Exception r -> equal l.tag r.tag && equal l.value r.value
+    | Exception l, Exception r ->
+        equal l.tag r.tag && equal l.value r.value
+        && [%compare.equal: Span.t List.t Option.t] l.stack r.stack
     | List l, List r -> List.equal equal l r
     | Dict l, Dict r -> Dict.equal equal l r
     | Builtin l, Builtin r ->
@@ -93,12 +97,12 @@ end = struct
         false
 end
 
-and Dict : (Map.S with type key = Value_impl.t) = Map.Make (Value_impl)
+and Dict : (Map.S with type key = Value'.t) = Map.Make (Value')
 
-exception Runtime_nonfatal of Value_impl.except
+exception Runtime_nonfatal of Value'.except
 
 module Value = struct
-  include Value_impl
+  include Value'
 
   let rec to_string t =
     let dict_entry_to_string (k, v) =
@@ -183,32 +187,13 @@ module Value = struct
     | Unit | Number _ | Symbol _ | Exception _ | Builtin _ | Lambda _ ->
         raise_type_error ~stack t "indexable"
 end
-(*
-  (* Standard error reporting infrastructure *)
-  val raise_type_error : stack:Span.t list -> t -> string -> 'a
-
-  (* Standard coercions.  All raise a non-fatal type error on coercion failure *)
-  val as_number : stack:Span.t list -> t -> Q.t
-  (** @raise Runtime_nonfatal if the value is not a number *)
-
-  (* val as_bool : span:Span.t -> t -> Bool.t *)
-
-  (* Nontrivial runtime functions *)
-  val get : stack:Span.t list -> t -> t -> t
-   *)
 
 module Env = struct
-  type t = Value.env
-
-  let empty = Value.{ bindings = []; stack = [] }
-  let push_call span t = Value.{ t with stack = span :: t.stack }
+  include Env'
 
   exception Match_failure of Pattern.t * Value.t
 
-  let add_binding_base id value (t : t) =
-    { t with bindings = (id, `Value value) :: t.bindings }
-
-  let rec add_binding pat value (t : t) =
+  let rec add_binding pat value t =
     let handle_dict_row (t, dict) row =
       let do_symbol_binding i pat =
         match Dict.get (Value.Symbol i) dict with
@@ -251,7 +236,7 @@ module Env = struct
           raise (Match_failure (pat, value))
     in
     match pat with
-    | _, Pattern.Bind id -> add_binding_base id value t
+    | _, Pattern.Bind id -> Env'.add_binding id value t
     | _, Pattern.Hole _ -> t
     | _, Pattern.Literal l -> bind_literal l value
     | (_, Pattern.Exception (tag_pat, value_pat)) as pat ->
@@ -264,7 +249,7 @@ module Env = struct
 
   let create kvs =
     List.fold_left
-      ~f:(fun t (id, value) -> add_binding_base id value t)
+      ~f:(fun t (id, value) -> Env'.add_binding id value t)
       ~init:empty kvs
 
   let raise_binding_failure ~stack pat value =
@@ -275,7 +260,7 @@ module Env = struct
              "Can't match %{Value.to_string value} with %{Pattern.to_string \
               pat}"] ))
 
-  let get ({ bindings; stack } : t) (idx, intended_id) =
+  let get { bindings; stack } (idx, intended_id) =
     match List.nth_opt bindings idx with
     | None -> None
     | Some (found_id, value) -> (
@@ -292,10 +277,10 @@ module Env = struct
         | `Value value -> Some value)
 
   let declare t id =
-    Value.{ t with bindings = (id, `Recurse (Ref.create None)) :: t.bindings }
+    { t with bindings = (id, `Recurse (Ref.create None)) :: t.bindings }
 
   let resolve t (idx, intended_id) value =
-    let found_id, to_resolve = List.nth t.Value.bindings idx in
+    let found_id, to_resolve = List.nth t.bindings idx in
     assert (Id.(intended_id = found_id));
     match to_resolve with
     | `Value _ ->
@@ -435,7 +420,7 @@ let std_prelude =
     (Id.of_string name, Value.Builtin { name; arity; actual = f })
   in
   let make_arith_binop name f =
-    let arith_binop_wrapper (env : Env.t) = function
+    let arith_binop_wrapper (env : Value.t Env.t) = function
       | [ l; r ] ->
           Value.Number
             (f
@@ -444,15 +429,15 @@ let std_prelude =
       | args -> raise_arity_mismatch ~stack:env.stack name 2 args
     in
     binding name 2 arith_binop_wrapper
-  and equals_wrapper (env : Env.t) = function
+  and equals_wrapper (env : Value.t Env.t) = function
     | [ l; r ] ->
         if Value.equal l r then Value.Symbol (Id.of_string "true")
         else Value.Symbol (Id.of_string "false")
     | args -> raise_arity_mismatch ~stack:env.stack "=" 2 args
-  and make_exn (env : Env.t) = function
+  and make_exn (env : Value.t Env.t) = function
     | [ l; r ] -> Value.Exception { tag = l; value = r; stack = None }
     | args -> raise_arity_mismatch ~stack:env.stack "!" 2 args
-  and raise_fn (env : Env.t) = function
+  and raise_fn (env : Value.t Env.t) = function
     | [ Value.Exception ({ stack; _ } as exn) ] ->
         raise
           (Runtime_nonfatal
