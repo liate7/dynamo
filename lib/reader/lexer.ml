@@ -17,9 +17,7 @@ let comment = [%sedlex.regexp? "--", Star (Compl '\n')]
 
 let rec read lexbuf =
   match%sedlex lexbuf with
-  | Opt comment, '\n' ->
-      new_line lexbuf;
-      read lexbuf
+  | Opt comment, '\n' -> read lexbuf
   | Opt comment, eof -> EOF
   | Plus white_space -> read lexbuf
   | '+' -> PLUS
