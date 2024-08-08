@@ -1,4 +1,5 @@
 open! ContainersLabels
+open! Eio.Std
 module Value = Eval.Value
 module Eval = Eval
 module Reader = Reader
@@ -70,68 +71,56 @@ let repl stdin stdout =
     match read_with_prompt stdin stdout prompt with
     | exception End_of_file -> ()
     | line -> (
-        let str = str ^ line ^ "\n"
+        let line = line ^ "\n" in
+        let str = str ^ line
         and buf =
           match pos with
           | Some pos ->
-              let buf = Sedlexing.Utf8.from_string ("\n" ^ line) in
+              let buf = Sedlexing.Utf8.from_string line in
               Sedlexing.set_position buf pos;
               buf
           | None -> Sedlexing.Utf8.from_string line
+        in
+        let loop = loop str
+        and end_position buf =
+          let _, pos = Sedlexing.lexing_positions buf in
+          Some pos
         in
         match eval ~name:"<repl>" ?continue_from:checkpoint buf with
         | obj ->
             Eio.Flow.copy_string
               [%string "-- _ = %{Eval.Value.to_string obj}\n"] stdout;
-            loop "" None None
-        | exception End_of_file -> ()
+            loop (end_position buf) None
         | (exception Reader.Lexer_error (span, msg))
         | (exception Reader.Parser_error (span, msg)) ->
             Eio.Flow.copy_string
-              (String.concat ~sep:""
-                 [ "Parsing error: "; span_string str span; ": "; msg; "\n" ])
+              [%string "Parsing error: %{span_string str span}: %{msg}\n"]
               stdout;
-            loop "" None None
+            loop None None
         | exception Reader.Needs_input checkpoint ->
-            loop str
-              (Some
-                 (let _, pos = Sedlexing.lexing_positions buf in
-                  pos))
-              (Some checkpoint)
-        | (exception Errors.Compile_time_fatal (span, msg))
-        | (exception Errors.Miscompilation (span, msg)) ->
+            loop (end_position buf) (Some checkpoint)
+        | exception Errors.Compile_time_fatal (span, msg) ->
             Eio.Flow.copy_string
-              (String.concat ~sep:""
-                 [
-                   "Compilation error: "; span_string str span; ": "; msg; "\n";
-                 ])
+              [%string "Compile-time error: %{span_string str span}: %{msg}\n"]
               stdout;
-            loop "" None None
+            loop None None
+        | exception Errors.Miscompilation (span, msg) ->
+            Eio.Flow.copy_string
+              [%string "Compilation error: %{span_string str span}: %{msg}\n"]
+              stdout;
+            loop None None
         | exception Errors.Runtime_fatal (stack, msg) ->
             Eio.Flow.copy_string
-              (String.concat ~sep:""
-                 [
-                   "Fatal error: ";
-                   msg;
-                   "\n";
-                   stack_trace_string stack str;
-                   "\n\n";
-                 ])
+              [%string "Fatal error: %{msg}\n%{stack_trace_string stack str}\n"]
               stdout;
-            loop "" None None
+            loop (end_position buf) None
         | exception Eval.Runtime_nonfatal { tag; value; stack } ->
             Eio.Flow.copy_string
-              (String.concat ~sep:""
-                 [
-                   "Uncaught exception: ";
-                   Value.to_string tag;
-                   " ! ";
-                   Value.to_string value;
-                   "\n";
-                   stack_trace_string (Option.get_or stack ~default:[]) str;
-                   "\n\n";
-                 ])
+              [%string
+                "Uncaught exception: %{Value.to_string tag} ! \
+                 %{Value.to_string value}\n\
+                 %{stack_trace_string (Option.get_or stack ~default:[]) str}\n"]
               stdout;
-            loop "" None None)
+            loop (end_position buf) None)
   in
   loop "" None None
