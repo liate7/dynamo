@@ -25,7 +25,11 @@ module Literal : sig
 end
 
 module Pattern : sig
-  type t = Bind of Id.t | Hole of String.t | Literal of t Literal.t
+  type t =
+    | Bind of Id.t
+    | Hole of String.t
+    | Literal of t Literal.t
+    | Exception of t * t
 
   val compare : t -> t -> int
   val equal : t -> t -> bool
@@ -42,6 +46,6 @@ and expr' =
   | Appl of expr * expr list
   | Get of expr * expr
   | Lambda of { name : Id.t Option.t; params : Pattern.t list; body : expr }
-  | Match of expr * (Pattern.t * expr) list
+  | Match of expr * ([ `Value of Pattern.t | `Catch of Pattern.t ] * expr) list
 
 type t = expr

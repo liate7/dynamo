@@ -29,3 +29,5 @@ let to_string t =
   | RIGHT_SQUARE -> "]"
   | LEFT_SQUARE -> "["
   | DOT -> "."
+  | RAISED -> "raised"
+  | BANG -> "!"

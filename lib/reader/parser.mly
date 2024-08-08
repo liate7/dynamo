@@ -8,8 +8,10 @@
 %token LAMBDA "λ" ARROW "->"
 %token BAR "|"
 %token DOT "."
+%token BANG "!"
 
 %token LET MATCH IN
+%token RAISED
 
 %token <string> HOLE
 %token <string> IDENTIFIER
@@ -21,7 +23,7 @@
 %nonassoc below_SEMICOLON
 %nonassoc SEMICOLON
 
-%left "+" "-" "/" "*" "="
+%left "+" "-" "/" "*" "=" "!"
 
 %{
     open! ContainersLabels
@@ -78,7 +80,9 @@ binding:
 
 match_clause:
   | p = pattern; "->"; e = expression
-    { p, e }
+    { `Value p, e }
+  | RAISED; p = pattern; "->"; e = expression
+    { `Catch p, e }
 
 pattern:
   | i = identifier
@@ -87,6 +91,8 @@ pattern:
     { Hole h }
   | l = literal(pattern)
     { Literal l }
+  | tag = pattern; "!"; value = pattern
+    { Exception (tag, value) }
 
 identifier:
   | i = IDENTIFIER { Id.of_string i }
@@ -117,6 +123,7 @@ dict_element(elem):
   | "/" { ($startpos, $endpos), Var (Id.of_string "/") }
   | "*" { ($startpos, $endpos), Var (Id.of_string "*") }
   | "=" { ($startpos, $endpos), Var (Id.of_string "=") }
+  | "!" { ($startpos, $endpos), Var (Id.of_string "!") }
 
 base:
   | "("; e = expression; ")"

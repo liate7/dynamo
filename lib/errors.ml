@@ -1,4 +1,5 @@
 module Span = Reader.Span
 
-exception Runtime_fatal of Span.t * String.t
+exception Compile_time_fatal of Span.t * String.t
+exception Runtime_fatal of Span.t list * String.t
 exception Miscompilation of Span.t * String.t

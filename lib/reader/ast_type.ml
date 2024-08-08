@@ -34,7 +34,11 @@ module Literal = struct
 end
 
 module Pattern = struct
-  type t = Bind of Id.t | Hole of String.t | Literal of t Literal.t
+  type t =
+    | Bind of Id.t
+    | Hole of String.t
+    | Literal of t Literal.t
+    | Exception of t * t
   [@@deriving compare]
 
   let equal l r = compare l r = 0
@@ -44,6 +48,7 @@ module Pattern = struct
     | Bind id -> Id.to_string id
     | Hole s -> "_" ^ s
     | Literal l -> Literal.to_string to_string l
+    | Exception (tag, value) -> to_string tag ^ " ! " ^ to_string value
 end
 
 type expr = Span.t * expr'
@@ -56,6 +61,6 @@ and expr' =
   | Appl of expr * expr list
   | Get of expr * expr
   | Lambda of { name : Id.t Option.t; params : Pattern.t list; body : expr }
-  | Match of expr * (Pattern.t * expr) list
+  | Match of expr * ([ `Value of Pattern.t | `Catch of Pattern.t ] * expr) list
 
 type t = expr

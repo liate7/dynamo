@@ -15,7 +15,7 @@ and expr' =
   | Appl of expr * expr list
   | Get of expr * expr
   | Lambda of { name : Id.t Option.t; params : Pattern.t list; body : expr }
-  | Match of expr * (Pattern.t * expr) list
+  | Match of expr * ([ `Value of Pattern.t | `Catch of Pattern.t ] * expr) list
 
 and binding =
   | Bind of Pattern.t * expr

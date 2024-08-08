@@ -16,7 +16,7 @@ and expr' =
   | Appl of expr * expr list
   | Get of expr * expr
   | Lambda of { name : Id.t Option.t; params : Pattern.t list; body : expr }
-  | Match of expr * (Pattern.t * expr) list
+  | Match of expr * ([ `Value of Pattern.t | `Catch of Pattern.t ] * expr) list
 
 and binding =
   | Bind of Pattern.t * expr
@@ -56,6 +56,8 @@ let rec pattern_binds : Pattern.t -> Id.t Seq.t = function
   | Pattern.Bind id -> Seq.singleton id
   | Pattern.Literal lit -> literal_binds lit
   | Pattern.Hole _ -> Seq.empty
+  | Pattern.Exception (tag, value) ->
+      Seq.append (pattern_binds tag) (pattern_binds value)
 
 and literal_binds : Pattern.t Literal.t -> Id.t Seq.t = function
   | Literal.List list -> List.to_seq list |> Seq.flat_map pattern_binds
@@ -84,7 +86,9 @@ let rec map_expression : Env.t -> input -> output =
         let to_match = map_expression env to_match
         and clauses =
           List.map clauses ~f:(fun (pat, expr) ->
-              (pat, map_expression (pattern_binds pat |> Env.bind_all env) expr))
+              ( pat,
+                let pat = match pat with `Catch p -> p | `Value p -> p in
+                map_expression (pattern_binds pat |> Env.bind_all env) expr ))
         in
         Match (to_match, clauses)
     | Let { bindings; body } ->
@@ -116,7 +120,7 @@ and sequence_letrec ~span env bindings =
       List.rev_map duplicates ~f:Id.to_string |> String.concat ~sep:", "
     in
     raise
-      (Errors.Runtime_fatal
+      (Errors.Compile_time_fatal
          ( span,
            [%string
              {|Duplicate bindings for the following names: %{duplicates}|}] ))
@@ -183,5 +187,5 @@ let pass env ast =
   try map_expression env ast
   with Binding_unbound (span, id) ->
     raise
-      (Errors.Runtime_fatal
+      (Errors.Compile_time_fatal
          (span, [%string "Variable %{Id.to_string id} is unbound."]))

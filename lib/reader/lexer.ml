@@ -28,6 +28,7 @@ let rec read lexbuf =
   | '*' -> STAR
   | ';' -> SEMICOLON
   | ',' -> COMMA
+  | '!' -> BANG
   | '=' -> EQUALS
   | '(' -> LEFT_PAREN
   | ')' -> RIGHT_PAREN
@@ -40,6 +41,7 @@ let rec read lexbuf =
   | "match" -> MATCH
   | "let" -> LET
   | "in" -> IN
+  | "raised" -> RAISED
   | "λ" | "\\" -> LAMBDA
   | "->" | "→" -> ARROW
   | num -> NUMBER (Q.of_string @@ Utf8.lexeme lexbuf)
