@@ -45,30 +45,30 @@ expression:
 sequence:
   | e = single
     %prec below_SEMICOLON
-    { ($startpos, $endpos), [e] }
+    { $loc, [e] }
   | e = single; SEMICOLON; s = sequence
-    { let _, s = s in ($startpos, $endpos), e :: s }
+    { let _, s = s in $loc, e :: s }
 
 single:
   | LET; ","?; b = separated_nonempty_list(",", binding); IN; e = expression
-    { ($startpos, $endpos), Let { bindings = b; body = e } }
+    { $loc, Let { bindings = b; body = e } }
   | "λ"; p = pattern+; "->"; e = expression
-    { ($startpos, $endpos), Lambda { name = None; params = p; body = e } }
+    { $loc, Lambda { name = None; params = p; body = e } }
   | MATCH; e = expression; IN; "{"; "|"?; c = separated_nonempty_list("|", match_clause); "}"
-    { ($startpos, $endpos), Match (e, c) }
+    { $loc, Match (e, c) }
   | "λ"; MATCH; "{"; "|"?; c = separated_nonempty_list("|", match_clause); "}"
     { let id = Id.of_string "_" in
-      ($startpos, $endpos),
+      $loc,
       Lambda {
           name = None;
-          params = [Bind id]; 
-          body = ($startpos, $endpos), Match ((($startpos, $endpos), Var id), c)
+          params = [$loc($2), Bind id]; 
+          body = $loc, Match (($loc, Var id), c)
         }
     }
   | l = single; o = operator; r = single
-    { ($startpos, $endpos), Appl (o, [l; r]) }
+    { $loc, Appl (o, [l; r]) }
   | b = base; rest = base+
-    { ($startpos, $endpos), (Appl (b, rest)) }
+    { $loc, (Appl (b, rest)) }
   | b = base
     { b }
 
@@ -76,7 +76,8 @@ binding:
   | p = pattern; "="; e = expression
 	{ p, e }
   | i = identifier; p = pattern+; "="; e = expression
-    { Bind i, (($startpos, $endpos), Lambda { name = Some i; params = p; body = e }) }
+    { (($startpos(i), $endpos(p)), Bind i),
+	  ($loc, Lambda { name = Some i; params = p; body = e }) }
 
 match_clause:
   | p = pattern; "->"; e = expression
@@ -86,13 +87,13 @@ match_clause:
 
 pattern:
   | i = identifier
-    { Bind i }
+    { $loc, Bind i }
   | h = HOLE
-    { Hole h }
+    { $loc, Hole h }
   | l = literal(pattern)
-    { Literal l }
+    { $loc, Literal l }
   | tag = pattern; "!"; value = pattern
-    { Exception (tag, value) }
+    { $loc, Exception (tag, value) }
 
 identifier:
   | i = IDENTIFIER { Id.of_string i }
@@ -115,28 +116,28 @@ dict_element(elem):
   | "."; "["; k = elem; "]"; "="; v = elem
     { `Computed (k, v) }
   | i = identifier;
-    { `Single i }
+    { `Single ($loc, i) }
 
 %inline operator:
-  | "+" { ($startpos, $endpos), Var (Id.of_string "+") }
-  | "-" { ($startpos, $endpos), Var (Id.of_string "-") }
-  | "/" { ($startpos, $endpos), Var (Id.of_string "/") }
-  | "*" { ($startpos, $endpos), Var (Id.of_string "*") }
-  | "=" { ($startpos, $endpos), Var (Id.of_string "=") }
-  | "!" { ($startpos, $endpos), Var (Id.of_string "!") }
+  | "+" { $loc, Var (Id.of_string "+") }
+  | "-" { $loc, Var (Id.of_string "-") }
+  | "/" { $loc, Var (Id.of_string "/") }
+  | "*" { $loc, Var (Id.of_string "*") }
+  | "=" { $loc, Var (Id.of_string "=") }
+  | "!" { $loc, Var (Id.of_string "!") }
 
 base:
   | "("; e = expression; ")"
-    { let _, e = e in ($startpos, $endpos), e }
+    { let _, e = e in $loc, e }
   | b = base; "."; p = path
-    { ($startpos, $endpos), (Get (b, p)) }
+    { $loc, (Get (b, p)) }
   | i = identifier
-    { ($startpos, $endpos), Var i }
+    { $loc, Var i }
   | l = literal(expression)
-    { ($startpos, $endpos), Literal l }
+    { $loc, Literal l }
 
 path:
   | i = identifier
-    { ($startpos, $endpos), Literal (Literal.Symbol i) }
+    { $loc, Literal (Literal.Symbol i) }
   | "["; e = expression; "]"
     { e }

@@ -14,7 +14,9 @@ module Literal = struct
   type 'elem t =
     | List of 'elem List.t
     | Dict of
-        [ `Bare of Id.t * 'elem | `Computed of 'elem * 'elem | `Single of Id.t ]
+        [ `Bare of Id.t * 'elem
+        | `Computed of 'elem * 'elem
+        | `Single of Span.t * Id.t ]
         List.t
     | Number of Q.t
     | Symbol of Id.t
@@ -34,7 +36,9 @@ module Literal = struct
 end
 
 module Pattern = struct
-  type t =
+  type t = Span.t * t'
+
+  and t' =
     | Bind of Id.t
     | Hole of String.t
     | Literal of t Literal.t
@@ -43,7 +47,7 @@ module Pattern = struct
 
   let equal l r = compare l r = 0
 
-  let rec to_string t =
+  let rec to_string (_, t) =
     match t with
     | Bind id -> Id.to_string id
     | Hole s -> "_" ^ s

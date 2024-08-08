@@ -205,7 +205,10 @@ module Env = struct
 
   exception Match_failure of Pattern.t * Value.t
 
-  let rec add_binding pat value ({ Value.bindings; _ } as t) =
+  let add_binding_base id value (t : t) =
+    { t with bindings = (id, `Value value) :: t.bindings }
+
+  let rec add_binding pat value (t : t) =
     let handle_dict_row (t, dict) row =
       let do_symbol_binding i pat =
         match Dict.get (Value.Symbol i) dict with
@@ -215,9 +218,10 @@ module Env = struct
         | None -> raise (Match_failure (pat, value))
       in
       match row with
-      | `Single i -> do_symbol_binding i (Bind i)
       | `Bare (i, pat) -> do_symbol_binding i pat
-      | `Computed _ -> assert false
+      | `Single _ (* Compiled out in ~Resolver~, should refactor to remove *)
+      | `Computed _ ->
+          assert false
     in
     let bind_literal lit value =
       match (lit, value) with
@@ -238,19 +242,20 @@ module Env = struct
           | Value.List _ | Value.Dict _ | Value.Builtin _ | Value.Lambda _ ) )
         ->
           raise (Match_failure (pat, value))
-    and bind_exception tag_pat value_pat =
+    and bind_exception pat tag_pat value_pat =
       match value with
       | Value.Exception { tag; value; _ } ->
           add_binding tag_pat tag t |> add_binding value_pat value
       | Value.Unit | Value.Number _ | Value.Symbol _ | Value.List _
       | Value.Dict _ | Value.Builtin _ | Value.Lambda _ ->
-          raise (Match_failure (Pattern.Exception (tag_pat, value_pat), value))
+          raise (Match_failure (pat, value))
     in
     match pat with
-    | Pattern.Bind id -> { t with bindings = (id, `Value value) :: bindings }
-    | Pattern.Hole _ -> t
-    | Pattern.Literal l -> bind_literal l value
-    | Pattern.Exception (tag_pat, value_pat) -> bind_exception tag_pat value_pat
+    | _, Pattern.Bind id -> add_binding_base id value t
+    | _, Pattern.Hole _ -> t
+    | _, Pattern.Literal l -> bind_literal l value
+    | (_, Pattern.Exception (tag_pat, value_pat)) as pat ->
+        bind_exception pat tag_pat value_pat
 
   let add_bindings_list kvs t =
     List.fold_left
@@ -259,7 +264,7 @@ module Env = struct
 
   let create kvs =
     List.fold_left
-      ~f:(fun t (id, value) -> add_binding (Pattern.Bind id) value t)
+      ~f:(fun t (id, value) -> add_binding_base id value t)
       ~init:empty kvs
 
   let raise_binding_failure ~stack pat value =
@@ -333,8 +338,8 @@ let rec eval env (ast : Resolver.output) : Value.t =
              Dict.add k (eval env v) d))
   | _, Resolver.Seq asts ->
       List.map ~f:(eval env) asts |> List.last_opt |> Option.get_exn_or ""
-  | span, Resolver.Let { bindings = kvs; body } ->
-      let env = letrec_binds (Env.push_call span env) kvs in
+  | _, Resolver.Let { bindings = kvs; body } ->
+      let env = letrec_binds env kvs in
       eval env body
   | span, Resolver.Var (idx, var_name) -> (
       let env = Env.push_call span env in
@@ -351,9 +356,9 @@ let rec eval env (ast : Resolver.output) : Value.t =
         match rest with [] -> ret | args -> loop ret args
       in
       List.map ~f:(eval env) args |> loop (eval env f)
-  | _, Resolver.Get (from, idx) ->
+  | span, Resolver.Get (from, idx) ->
       let from = eval env from and idx = eval env idx in
-      Value.get ~stack:env.stack from idx
+      Value.get ~stack:(span :: env.stack) from idx
   | span, Resolver.Lambda { name; params; body } ->
       let name = name |> Option.map_or ~default:"%anon%" Id.to_string in
       Lambda
@@ -364,13 +369,12 @@ let rec eval env (ast : Resolver.output) : Value.t =
           body;
         }
   | span, Resolver.Match (value, clauses) -> (
-      let env = Env.push_call span env in
-      let rec loop value exn = function
+      let rec do_match value exn = function
         | [] -> raise exn
         | (pat, expr) :: clauses -> (
             match Env.add_binding pat value env with
             | env -> eval env expr
-            | exception Env.Match_failure _ -> loop value exn clauses)
+            | exception Env.Match_failure _ -> do_match value exn clauses)
       in
       match eval env value with
       | value ->
@@ -378,9 +382,9 @@ let rec eval env (ast : Resolver.output) : Value.t =
           |> List.filter_map ~f:(function
                | `Value pat, expr -> Some (pat, expr)
                | _ -> None)
-          |> loop value
+          |> do_match value
                (Errors.Runtime_fatal
-                  ( env.stack,
+                  ( span :: env.stack,
                     [%string
                       "Value %{Value.to_string value} matched no clauses"] ))
       | exception Runtime_nonfatal value ->
@@ -388,14 +392,14 @@ let rec eval env (ast : Resolver.output) : Value.t =
           |> List.filter_map ~f:(function
                | `Catch pat, expr -> Some (pat, expr)
                | _ -> None)
-          |> loop (Value.Exception value) (Runtime_nonfatal value))
+          |> do_match (Value.Exception value) (Runtime_nonfatal value))
 
 and letrec_binds env kvs =
   let f env = function
-    | Resolver.Bind (pat, expr) -> (
+    | Resolver.Bind (((span, _) as pat), expr) -> (
         try env |> Env.add_binding pat (eval env expr)
         with Env.Match_failure (pat, value) ->
-          Env.raise_binding_failure ~stack:env.stack pat value)
+          Env.raise_binding_failure ~stack:(span :: env.stack) pat value)
     | Decl id -> Env.declare env id
     | Resolve { cell_idx; name; value_idx } ->
         Env.resolve env (cell_idx, name) value_idx;

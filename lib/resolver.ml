@@ -53,10 +53,10 @@ end
 module Id_set = Set.Make (Id)
 
 let rec pattern_binds : Pattern.t -> Id.t Seq.t = function
-  | Pattern.Bind id -> Seq.singleton id
-  | Pattern.Literal lit -> literal_binds lit
-  | Pattern.Hole _ -> Seq.empty
-  | Pattern.Exception (tag, value) ->
+  | _, Pattern.Bind id -> Seq.singleton id
+  | _, Pattern.Literal lit -> literal_binds lit
+  | _, Pattern.Hole _ -> Seq.empty
+  | _, Pattern.Exception (tag, value) ->
       Seq.append (pattern_binds tag) (pattern_binds value)
 
 and literal_binds : Pattern.t Literal.t -> Id.t Seq.t = function
@@ -65,7 +65,7 @@ and literal_binds : Pattern.t Literal.t -> Id.t Seq.t = function
       List.to_seq dict_rows
       |> Seq.flat_map (function
            | `Bare (_, pat) -> pattern_binds pat
-           | `Single id -> pattern_binds (Bind id)
+           | `Single (_, id) -> Seq.singleton id
            | `Computed (k, v) ->
                Seq.of_list [ k; v ] |> Seq.flat_map pattern_binds)
   | Literal.Unit | Literal.Number _ | Literal.Symbol _ -> Seq.empty
@@ -95,7 +95,7 @@ let rec map_expression : Env.t -> input -> output =
         let env, bindings = sequence_letrec ~span env bindings in
         Let { bindings; body = map_expression env body }
     (* Just recurse *)
-    | Literal lit -> Literal (map_literal ~span env lit)
+    | Literal lit -> Literal (map_literal env lit)
     | Seq list -> Seq (List.map list ~f:(map_expression env))
     | Appl (f, args) ->
         let f = map_expression env f in
@@ -165,16 +165,14 @@ and map_bindings ~span env bindings bound_ids bound_in_let =
   in
   (env, List.rev bindings)
 
-and map_literal : span:Span.t -> Env.t -> input Literal.t -> output Literal.t =
- fun ~span env -> function
+and map_literal : Env.t -> input Literal.t -> output Literal.t =
+ fun env -> function
   | Literal.List list -> Literal.List (List.map list ~f:(map_expression env))
   | Literal.Dict dict_rows ->
       Literal.Dict
         (List.map dict_rows ~f:(function
           | `Bare (id, value) -> `Bare (id, map_expression env value)
-          | `Single id ->
-              (* TODO: get a more precise span here *)
-              `Bare (id, map_expression env (span, Var id))
+          | `Single (span, id) -> `Bare (id, map_expression env (span, Var id))
           | `Computed (key, value) ->
               `Computed (map_expression env key, map_expression env value)))
   (* Just remake *)

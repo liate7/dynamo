@@ -13,7 +13,9 @@ module Literal : sig
   type 'elem t =
     | List of 'elem list
     | Dict of
-        [ `Bare of Id.t * 'elem | `Computed of 'elem * 'elem | `Single of Id.t ]
+        [ `Bare of Id.t * 'elem
+        | `Computed of 'elem * 'elem
+        | `Single of Span.t * Id.t ]
         List.t
     | Number of Q.t
     | Symbol of Id.t
@@ -25,7 +27,9 @@ module Literal : sig
 end
 
 module Pattern : sig
-  type t =
+  type t = Span.t * t'
+
+  and t' =
     | Bind of Id.t
     | Hole of String.t
     | Literal of t Literal.t

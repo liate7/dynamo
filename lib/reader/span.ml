@@ -1,4 +1,16 @@
+open ContainersLabels
+
 type t = Lexing.position * Lexing.position
+
+let position_compare =
+  Fun.lexicographic
+    (fun l r -> String.compare l.Lexing.pos_fname r.Lexing.pos_fname)
+    (fun l r -> Int.compare l.pos_cnum r.pos_cnum)
+
+let compare =
+  Fun.lexicographic
+    (fun (l, _) (r, _) -> position_compare l r)
+    (fun (_, l) (_, r) -> position_compare l r)
 
 let to_string ((start, end_) : t) =
   assert (String.equal start.pos_fname end_.pos_fname);
